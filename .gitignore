@@ -1,0 +1,15 @@
+# build artifacts
+WeTime.app/
+WeTime.zip
+MenuBarApp.app/
+MenuBarApp.zip
+AppIcon.icns
+AppIcon.iconset/
+icon.png
+
+# macOS junk
+.DS_Store
+
+# secrets / local
+*.local
+secrets.txt
