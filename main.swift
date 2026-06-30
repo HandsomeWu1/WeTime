@@ -224,17 +224,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildMenu() {
         menu.removeAllItems()
         menu.delegate = self
+        menu.autoenablesItems = false  // 手动控制 enabled，避免无 action 项被自动置灰
 
         summaryItem.target = self
         summaryItem.action = #selector(copySummary)
         menu.addItem(summaryItem)
 
-        detailItem.isEnabled = false
+        detailItem.isEnabled = true   // 纯展示，但不灰
         menu.addItem(detailItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        presenceItem.isEnabled = false
+        presenceItem.isEnabled = true  // 纯展示，但不灰
         menu.addItem(presenceItem)
 
         pokeItem.target = self
