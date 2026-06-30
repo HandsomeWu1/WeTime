@@ -422,18 +422,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func checkForUpdates(silent: Bool) {
-        let api = "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases/latest"
-        guard let url = URL(string: api) else { return }
+        // 用 releases.atom 而不是 API，避免匿名限流（60次/小时）
+        let feed = "https://github.com/\(githubOwner)/\(githubRepo)/releases.atom"
+        guard let url = URL(string: feed) else { return }
         var req = URLRequest(url: url)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("application/atom+xml", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 15
         URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
             guard let self else { return }
             DispatchQueue.main.async {
                 guard let data = data,
                       (resp as? HTTPURLResponse)?.statusCode == 200,
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let tag = obj["tag_name"] as? String else {
+                      let text = String(data: data, encoding: .utf8),
+                      let tag = self.parseLatestTag(fromAtom: text) else {
                     if !silent {
                         self.showAlert(title: "检查失败",
                                        text: "无法连接 GitHub，稍后再试。")
@@ -460,6 +461,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }.resume()
+    }
+
+    /// 从 atom feed 里抓第一个 <title>vX.Y.Z</title>（跳过 feed 自身的标题）
+    private func parseLatestTag(fromAtom xml: String) -> String? {
+        // feed 结构：<feed>...<title>Release notes from WeTime</title>...<entry><title>v1.0.0</title>...
+        // 取第一个 <entry> 里的 <title>
+        guard let entryRange = xml.range(of: "<entry>") else { return nil }
+        let after = xml[entryRange.upperBound...]
+        guard let openTag = after.range(of: "<title>"),
+              let closeTag = after.range(of: "</title>") else { return nil }
+        let title = after[openTag.upperBound..<closeTag.lowerBound]
+        return title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func normalize(_ s: String) -> String {
