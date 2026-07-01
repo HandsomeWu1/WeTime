@@ -737,7 +737,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.refreshUpdateItem()
                     if !silent {
                         self.showAlert(title: "已是最新版本",
-                                       text: "当前 v\(current)。")
+                                       text: "当前 v\(current)，已是最新。")
                     }
                 }
             }
