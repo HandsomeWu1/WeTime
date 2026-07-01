@@ -180,6 +180,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var defaultIcon: NSImage?
 
     private var availableNewVersion: String?
+    private var isUpdating: Bool = false
+    private var downloadTask: URLSessionDownloadTask?
     private var lastSeenOther: Date?
 
     private var isDNDEnabled: Bool = false
@@ -261,6 +263,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.ntfy.sendDNDStatus(true)
             }
         }
+
+        cleanupUpdateArtifacts()
     }
 
     private func buildMenu() {
@@ -589,23 +593,111 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
     }
 
+    private func downloadAndInstallUpdate() {
+        guard !isUpdating, let version = availableNewVersion else { return }
+        isUpdating = true
+        updateItem.title = "⬇️ 下载中…"
+        updateItem.isEnabled = false
+
+        let zipURL = URL(string:
+            "https://github.com/\(githubOwner)/\(githubRepo)/releases/download/\(version)/WeTime.zip")!
+        let task = URLSession.shared.downloadTask(with: zipURL) { [weak self] tmpURL, _, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error {
+                    self.finishUpdate(success: false, message: error.localizedDescription); return
+                }
+                guard let tmpURL else {
+                    self.finishUpdate(success: false, message: "下载失败"); return
+                }
+                self.installUpdate(from: tmpURL, version: version)
+            }
+        }
+        downloadTask = task
+        task.resume()
+    }
+
+    private func installUpdate(from zipURL: URL, version: String) {
+        updateItem.title = "📦 安装中…"
+        let fm = FileManager.default
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("WeTime-update-\(version)")
+        do {
+            try? fm.removeItem(at: tmpDir)
+            try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+
+            let unzip = Process()
+            unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+            unzip.arguments = ["-q", zipURL.path, "-d", tmpDir.path]
+            try unzip.run(); unzip.waitUntilExit()
+            guard unzip.terminationStatus == 0 else {
+                finishUpdate(success: false, message: "解压失败"); return
+            }
+
+            let newApp = tmpDir.appendingPathComponent("WeTime.app")
+            guard fm.fileExists(atPath: newApp.path) else {
+                finishUpdate(success: false, message: "包结构异常"); return
+            }
+
+            let sign = Process()
+            sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+            sign.arguments = ["--force", "--deep", "--sign", "-", newApp.path]
+            try sign.run(); sign.waitUntilExit()
+
+            let appPath = Bundle.main.bundleURL
+            let backupPath = appPath.deletingLastPathComponent()
+                .appendingPathComponent("WeTime.app.bak")
+            try? fm.removeItem(at: backupPath)
+            try fm.moveItem(at: appPath, to: backupPath)
+            try fm.moveItem(at: newApp, to: appPath)
+
+            let relaunch = Process()
+            relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            relaunch.arguments = [appPath.path]
+            try relaunch.run()
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+        } catch {
+            finishUpdate(success: false, message: error.localizedDescription)
+        }
+    }
+
+    private func finishUpdate(success: Bool, message: String) {
+        isUpdating = false
+        downloadTask = nil
+        if success { return }
+        updateItem.isEnabled = true
+        refreshUpdateItem()
+        showAlert(title: "更新失败", text: message)
+    }
+
+    private func cleanupUpdateArtifacts() {
+        let fm = FileManager.default
+        let backupPath = Bundle.main.bundleURL.deletingLastPathComponent()
+            .appendingPathComponent("WeTime.app.bak")
+        try? fm.removeItem(at: backupPath)
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        if let items = try? fm.contentsOfDirectory(at: tmpDir, includingPropertiesForKeys: nil) {
+            for item in items where item.lastPathComponent.hasPrefix("WeTime-update-") {
+                try? fm.removeItem(at: item)
+            }
+        }
+    }
+
     private func refreshUpdateItem() {
+        guard !isUpdating else { return }
         if let v = availableNewVersion {
-            updateItem.title = "⬆️ 发现新版 \(v)（点击下载）"
+            updateItem.title = "⬆️ 发现新版 \(v)（点击更新）"
         } else {
             updateItem.title = "检查更新（当前 v\(currentVersion)）"
         }
     }
 
     @objc private func checkForUpdatesManual() {
-        // 已知有新版：直接打开下载页
         if availableNewVersion != nil {
-            if let url = URL(string: releasesPageURL) {
-                NSWorkspace.shared.open(url)
-            }
+            downloadAndInstallUpdate()
             return
         }
-        // 否则发起一次检查（带提示）
         updateItem.title = "检查中…"
         checkForUpdates(silent: false)
     }
