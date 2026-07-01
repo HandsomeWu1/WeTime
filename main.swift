@@ -3,8 +3,10 @@ import UserNotifications
 
 // MARK: - 消息类型
 private enum MsgType: String {
-    case poke = "poke"
+    case poke      = "poke"
     case heartbeat = "hb"
+    case dndOn     = "dnd_on"
+    case dndOff    = "dnd_off"
 }
 
 private struct ParsedMsg {
@@ -31,7 +33,8 @@ final class NtfyClient: NSObject, URLSessionDataDelegate {
     private(set) var topic: String
     let deviceId: String
     var onPoke: (() -> Void)?
-    var onHeartbeat: (() -> Void)?  // 收到对方心跳
+    var onHeartbeat: (() -> Void)?
+    var onDNDChanged: ((Bool) -> Void)?
 
     private var session: URLSession?
     private var task: URLSessionDataTask?
@@ -98,6 +101,10 @@ final class NtfyClient: NSObject, URLSessionDataDelegate {
         send(type: .heartbeat, tags: "hb", priority: "min") { _ in }
     }
 
+    func sendDNDStatus(_ on: Bool) {
+        send(type: on ? .dndOn : .dndOff, tags: "do_not_disturb", priority: "min") { _ in }
+    }
+
     // MARK: URLSessionDataDelegate
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         buffer.append(data)
@@ -123,8 +130,10 @@ final class NtfyClient: NSObject, URLSessionDataDelegate {
         // 自己发的忽略
         if parsed.deviceId == deviceId { return }
         switch parsed.type {
-        case .poke: onPoke?()
+        case .poke:      onPoke?()
         case .heartbeat: onHeartbeat?()
+        case .dndOn:     onDNDChanged?(true)
+        case .dndOff:    onDNDChanged?(false)
         }
     }
 }
@@ -152,23 +161,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let releasesPageURL = "https://github.com/HandsomeWu1/WeTime/releases/latest"
 
     private let menu = NSMenu()
-    private let summaryItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let detailItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let presenceItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let pokeItem = NSMenuItem(title: "戳 TA 一下 ❤️", action: nil, keyEquivalent: "p")
-    private let topicItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let updateItem = NSMenuItem(title: "检查更新", action: nil, keyEquivalent: "")
+    private let summaryItem   = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let detailItem    = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let presenceItem  = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let pokeItem      = NSMenuItem(title: "戳 TA 一下 ❤️", action: nil, keyEquivalent: "p")
+    private let topicItem     = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let updateItem    = NSMenuItem(title: "检查更新", action: nil, keyEquivalent: "")
+    private let pendingPokeItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let pendingSepItem  = NSMenuItem.separator()
+    private let dndToggleItem   = NSMenuItem(title: "🔕 勿扰模式", action: nil, keyEquivalent: "n")
 
     private var ntfy: NtfyClient!
     private var iconRevertTimer: Timer?
     private var heartbeatTimer: Timer?
     private var presenceRefreshTimer: Timer?
     private var updateCheckTimer: Timer?
+    private var meetingDetectionTimer: Timer?
     private var defaultIcon: NSImage?
 
-    private var availableNewVersion: String?  // 检测到的新版本号
+    private var availableNewVersion: String?
+    private var lastSeenOther: Date?
 
-    private var lastSeenOther: Date?  // 上次收到对方心跳/戳的时间
+    private var isDNDEnabled: Bool = false
+    private var autoDNDActive: Bool = false
+    private var otherDND: Bool = false
+    private var pendingPokeCount: Int = 0
+
+    private let meetingBundleIDs: Set<String> = [
+        "com.tencent.meeting",
+        "com.tencent.meeting.appstore"
+    ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -186,6 +208,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ntfy = NtfyClient(topic: topic, deviceId: deviceId)
         ntfy.onPoke = { [weak self] in self?.handleIncomingPoke() }
         ntfy.onHeartbeat = { [weak self] in self?.handleIncomingHeartbeat() }
+        ntfy.onDNDChanged = { [weak self] on in
+            guard let self else { return }
+            self.otherDND = on
+            self.refreshPresenceItem()
+        }
+
+        isDNDEnabled = UserDefaults.standard.bool(forKey: "dndEnabled")
 
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -219,28 +248,52 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                 repeats: true) { [weak self] _ in
             self?.checkForUpdates(silent: true)
         }
+
+        // 会议全屏检测：立即检测一次，之后每 15 秒
+        checkMeetingStatus()
+        meetingDetectionTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.checkMeetingStatus()
+        }
+
+        // 广播当前 DND 状态（让对方初始化看到）
+        if isDNDEnabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.ntfy.sendDNDStatus(true)
+            }
+        }
     }
 
     private func buildMenu() {
         menu.removeAllItems()
         menu.delegate = self
-        menu.autoenablesItems = false  // 手动控制 enabled，避免无 action 项被自动置灰
+        menu.autoenablesItems = false
+
+        pendingPokeItem.target = self
+        pendingPokeItem.action = #selector(clearPendingPokes)
+        pendingPokeItem.isHidden = true
+        menu.addItem(pendingPokeItem)
+        pendingSepItem.isHidden = true
+        menu.addItem(pendingSepItem)
 
         summaryItem.target = self
         summaryItem.action = #selector(copySummary)
         menu.addItem(summaryItem)
 
-        detailItem.isEnabled = true   // 纯展示，但不灰
+        detailItem.isEnabled = true
         menu.addItem(detailItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        presenceItem.isEnabled = true  // 纯展示，但不灰
+        presenceItem.isEnabled = true
         menu.addItem(presenceItem)
 
         pokeItem.target = self
         pokeItem.action = #selector(sendPoke)
         menu.addItem(pokeItem)
+
+        dndToggleItem.target = self
+        dndToggleItem.action = #selector(toggleDND)
+        menu.addItem(dndToggleItem)
 
         topicItem.target = self
         topicItem.action = #selector(changeTopic)
@@ -259,6 +312,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshTopicItem()
         refreshPresenceItem()
         refreshUpdateItem()
+        refreshDNDItem()
+        refreshPendingPokeItem()
     }
 
     private func refreshTopicItem() {
@@ -295,10 +350,130 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let elapsed = Date().timeIntervalSince(last)
         if elapsed < onlineTimeout {
-            presenceItem.title = "🟢 对方在线"
+            presenceItem.title = otherDND ? "🟡 对方勿扰中" : "🟢 对方在线"
         } else {
             presenceItem.title = "🔴 对方离线（\(humanAgo(elapsed))）"
         }
+    }
+
+    private func refreshDNDItem() {
+        if autoDNDActive {
+            dndToggleItem.title = "🔕 勿扰模式（腾讯会议全屏，已自动开启）"
+            dndToggleItem.state = .on
+            dndToggleItem.isEnabled = false
+        } else {
+            dndToggleItem.title = "🔕 勿扰模式"
+            dndToggleItem.state = isDNDEnabled ? .on : .off
+            dndToggleItem.isEnabled = true
+        }
+    }
+
+    private func refreshPendingPokeItem() {
+        let hidden = pendingPokeCount == 0
+        pendingPokeItem.isHidden = hidden
+        pendingSepItem.isHidden  = hidden
+        if !hidden {
+            pendingPokeItem.title = "💕 TA 戳了你 \(pendingPokeCount) 次（点击清除）"
+        }
+    }
+
+    private func refreshStatusIcon() {
+        let count = (isDNDEnabled || autoDNDActive) ? pendingPokeCount : 0
+        if count > 0 {
+            statusItem.button?.image = makeStatusIcon(badgeCount: count)
+        } else {
+            statusItem.button?.image = defaultIcon
+        }
+    }
+
+    private func makeStatusIcon(badgeCount: Int) -> NSImage {
+        let size = NSSize(width: 26, height: 18)
+        let image = NSImage(size: size, flipped: false) { rect in
+            // 画心形
+            if let heart = NSImage(systemSymbolName: "heart.fill",
+                                   accessibilityDescription: nil) {
+                let heartRect = NSRect(x: 0, y: 1, width: 16, height: 16)
+                NSColor.labelColor.setFill()
+                heart.draw(in: heartRect,
+                           from: .zero,
+                           operation: .sourceOver,
+                           fraction: 1.0)
+            }
+            // 画角标
+            let label = badgeCount > 9 ? "9+" : "\(badgeCount)"
+            let diameter: CGFloat = 11
+            let badgeRect = NSRect(x: rect.width - diameter,
+                                   y: rect.height - diameter,
+                                   width: diameter,
+                                   height: diameter)
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: badgeRect).fill()
+
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 7),
+                .foregroundColor: NSColor.white
+            ]
+            let str = NSAttributedString(string: label, attributes: attrs)
+            let strSize = str.size()
+            let strPoint = NSPoint(
+                x: badgeRect.midX - strSize.width / 2,
+                y: badgeRect.midY - strSize.height / 2
+            )
+            str.draw(at: strPoint)
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    @objc private func clearPendingPokes() {
+        pendingPokeCount = 0
+        refreshPendingPokeItem()
+        refreshStatusIcon()
+    }
+
+    @objc private func toggleDND() {
+        isDNDEnabled.toggle()
+        UserDefaults.standard.set(isDNDEnabled, forKey: "dndEnabled")
+        ntfy.sendDNDStatus(isDNDEnabled || autoDNDActive)
+        refreshDNDItem()
+        refreshStatusIcon()
+    }
+
+    private func checkTencentMeetingFullscreen() -> Bool {
+        let pids = NSWorkspace.shared.runningApplications
+            .filter { meetingBundleIDs.contains($0.bundleIdentifier ?? "") }
+            .map { $0.processIdentifier }
+        guard !pids.isEmpty else { return false }
+
+        guard let windows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]] else { return false }
+
+        let screenFrames = NSScreen.screens.map { $0.frame }
+
+        for window in windows {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  pids.contains(pid) else { continue }
+            let layer = window[kCGWindowLayer as String] as? Int ?? 1
+            guard layer == 0 else { continue }
+            guard let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                  let w = boundsDict["Width"] as? CGFloat,
+                  let h = boundsDict["Height"] as? CGFloat else { continue }
+            if screenFrames.contains(where: { w >= $0.width - 5 && h >= $0.height - 5 }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func checkMeetingStatus() {
+        let inFullscreen = checkTencentMeetingFullscreen()
+        guard inFullscreen != autoDNDActive else { return }
+        autoDNDActive = inFullscreen
+        ntfy.sendDNDStatus(isDNDEnabled || autoDNDActive)
+        refreshDNDItem()
+        refreshStatusIcon()
     }
 
     private func humanAgo(_ seconds: TimeInterval) -> String {
@@ -317,6 +492,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshTopicItem()
         refreshPresenceItem()
         refreshUpdateItem()
+        refreshDNDItem()
+        refreshPendingPokeItem()
     }
 
     @objc private func copySummary() {
@@ -371,22 +548,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleIncomingPoke() {
-        // 戳本身也算一次"对方在线"信号
         lastSeenOther = Date()
         refreshPresenceItem()
 
-        let content = UNMutableNotificationContent()
-        content.title = "💕 TA 戳了你一下"
-        content.sound = .default
-        let req = UNNotificationRequest(identifier: UUID().uuidString,
-                                        content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        if isDNDEnabled || autoDNDActive {
+            pendingPokeCount += 1
+            refreshPendingPokeItem()
+            refreshStatusIcon()
+        } else {
+            let content = UNMutableNotificationContent()
+            content.title = "💕 TA 戳了你一下"
+            content.sound = .default
+            let req = UNNotificationRequest(identifier: UUID().uuidString,
+                                            content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(req)
 
-        if let button = statusItem.button {
-            button.contentTintColor = .systemPink
-            iconRevertTimer?.invalidate()
-            iconRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak button] _ in
-                button?.contentTintColor = nil
+            if let button = statusItem.button {
+                button.contentTintColor = .systemPink
+                iconRevertTimer?.invalidate()
+                iconRevertTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak button] _ in
+                    button?.contentTintColor = nil
+                }
             }
         }
     }
