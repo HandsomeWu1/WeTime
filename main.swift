@@ -446,8 +446,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .map { $0.processIdentifier }
         guard !pids.isEmpty else { return false }
 
+        // excludeDesktopElements without optionOnScreenOnly → covers all Spaces including fullscreen
         guard let windows = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+            [.excludeDesktopElements], kCGNullWindowID
         ) as? [[String: Any]] else { return false }
 
         let screenFrames = NSScreen.screens.map { $0.frame }
@@ -460,7 +461,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
                   let w = boundsDict["Width"] as? CGFloat,
                   let h = boundsDict["Height"] as? CGFloat else { continue }
-            if screenFrames.contains(where: { w >= $0.width - 5 && h >= $0.height - 5 }) {
+            // 覆盖任意屏幕 70% 以上即视为全屏会议（兼容腾讯会议非原生全屏）
+            if screenFrames.contains(where: { w >= $0.width * 0.7 && h >= $0.height * 0.7 }) {
                 return true
             }
         }
