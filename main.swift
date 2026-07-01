@@ -453,17 +453,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for window in windows {
             guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
                   pids.contains(pid) else { continue }
-            let layer = window[kCGWindowLayer as String] as? Int ?? 1
-            guard layer == 0 else { continue }
+            // 不过滤 layer：投屏覆盖层 layer=1001，普通窗口 layer=0，都需要检测
             guard let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
                   let wx = boundsDict["X"] as? CGFloat,
                   let wy = boundsDict["Y"] as? CGFloat,
                   let ww = boundsDict["Width"] as? CGFloat,
                   let wh = boundsDict["Height"] as? CGFloat else { continue }
 
-            // 必须同时满足：
-            // 1. 窗口原点贴近某个屏幕的左上角（50pt 容差）
-            // 2. 尺寸覆盖该屏幕 90% 以上
+            // 窗口原点贴近屏幕左上角（50pt 容差）且尺寸覆盖 90% 以上
             for screen in NSScreen.screens {
                 let sf = screen.frame
                 let originNearScreen = abs(wx - sf.minX) < 50 && wy < sf.minY + 50
