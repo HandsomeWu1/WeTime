@@ -446,12 +446,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .map { $0.processIdentifier }
         guard !pids.isEmpty else { return false }
 
-        // excludeDesktopElements without optionOnScreenOnly → covers all Spaces including fullscreen
         guard let windows = CGWindowListCopyWindowInfo(
             [.excludeDesktopElements], kCGNullWindowID
         ) as? [[String: Any]] else { return false }
-
-        let screenFrames = NSScreen.screens.map { $0.frame }
 
         for window in windows {
             guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
@@ -459,11 +456,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let layer = window[kCGWindowLayer as String] as? Int ?? 1
             guard layer == 0 else { continue }
             guard let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
-                  let w = boundsDict["Width"] as? CGFloat,
-                  let h = boundsDict["Height"] as? CGFloat else { continue }
-            // 覆盖任意屏幕 70% 以上即视为全屏会议（兼容腾讯会议非原生全屏）
-            if screenFrames.contains(where: { w >= $0.width * 0.7 && h >= $0.height * 0.7 }) {
-                return true
+                  let wx = boundsDict["X"] as? CGFloat,
+                  let wy = boundsDict["Y"] as? CGFloat,
+                  let ww = boundsDict["Width"] as? CGFloat,
+                  let wh = boundsDict["Height"] as? CGFloat else { continue }
+
+            // 必须同时满足：
+            // 1. 窗口原点贴近某个屏幕的左上角（50pt 容差）
+            // 2. 尺寸覆盖该屏幕 90% 以上
+            for screen in NSScreen.screens {
+                let sf = screen.frame
+                let originNearScreen = abs(wx - sf.minX) < 50 && wy < sf.minY + 50
+                let coversScreen = ww >= sf.width * 0.9 && wh >= sf.height * 0.9
+                if originNearScreen && coversScreen {
+                    return true
+                }
             }
         }
         return false
