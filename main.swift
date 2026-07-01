@@ -644,19 +644,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sign.arguments = ["--force", "--deep", "--sign", "-", newApp.path]
             try sign.run(); sign.waitUntilExit()
 
-            let appPath = Bundle.main.bundleURL
-            let backupPath = appPath.deletingLastPathComponent()
-                .appendingPathComponent("WeTime.app.bak")
+            // 安装目标：固定为 /Applications/WeTime.app
+            let installPath = URL(fileURLWithPath: "/Applications/WeTime.app")
+            let backupPath  = URL(fileURLWithPath: "/Applications/WeTime.app.bak")
             try? fm.removeItem(at: backupPath)
-            try fm.moveItem(at: appPath, to: backupPath)
-            try fm.moveItem(at: newApp, to: appPath)
+            if fm.fileExists(atPath: installPath.path) {
+                try fm.moveItem(at: installPath, to: backupPath)
+            }
+            try fm.moveItem(at: newApp, to: installPath)
 
+            // 先用 shell 脚本等旧进程退出再启动，避免 open 认为 app 已在运行
+            let script = "sleep 1 && open '\(installPath.path)'"
             let relaunch = Process()
-            relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            relaunch.arguments = [appPath.path]
+            relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+            relaunch.arguments = ["-c", script]
             try relaunch.run()
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+            NSApp.terminate(nil)
         } catch {
             finishUpdate(success: false, message: error.localizedDescription)
         }
@@ -673,8 +677,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func cleanupUpdateArtifacts() {
         let fm = FileManager.default
-        let backupPath = Bundle.main.bundleURL.deletingLastPathComponent()
-            .appendingPathComponent("WeTime.app.bak")
+        let backupPath = URL(fileURLWithPath: "/Applications/WeTime.app.bak")
         try? fm.removeItem(at: backupPath)
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
         if let items = try? fm.contentsOfDirectory(at: tmpDir, includingPropertiesForKeys: nil) {
