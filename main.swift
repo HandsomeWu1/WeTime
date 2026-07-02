@@ -291,9 +291,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        presenceItem.isEnabled = true
-        menu.addItem(presenceItem)
-
         pokeItem.target = self
         pokeItem.action = #selector(sendPoke)
         menu.addItem(pokeItem)
@@ -321,7 +318,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         refreshLoveTime()
         refreshTopicItem()
-        refreshPresenceItem()
         refreshUpdateItem()
         refreshDNDItem()
         refreshPendingPokeItem()
@@ -334,15 +330,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             topicItem.title = isStealthMode ? "Set channel…" : "设置共享频道…（未配置）"
             pokeItem.isEnabled = false
         } else {
-            topicItem.title = isStealthMode ? "Channel: \(topic)" : "共享频道：\(topic)（点击修改）"
+            topicItem.title = isStealthMode ? "Edit channel" : "编辑频道"
             pokeItem.isEnabled = true
         }
         pokeItem.title = isStealthMode ? "Ping" : "戳 TA 一下 ❤️"
     }
 
-    private func refreshStealthItem() {
-        stealthToggleItem.title  = "隐身模式"
-        stealthToggleItem.state  = isStealthMode ? .on : .off
+    private func presenceDot() -> String {
+        guard let last = lastSeenOther else { return "⚪️" }
+        let elapsed = Date().timeIntervalSince(last)
+        if elapsed >= onlineTimeout { return "🔴" }
+        return otherDND ? "🟡" : "🟢"
     }
 
     private func refreshLoveTime() {
@@ -351,21 +349,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let days = cal.dateComponents([.day], from: loveStart, to: now).day ?? 0
         let parts = cal.dateComponents([.year, .month, .day], from: loveStart, to: now)
         let y = parts.year ?? 0, m = parts.month ?? 0, d = parts.day ?? 0
+        let dot = presenceDot()
         if isStealthMode {
             if now < loveStart {
                 let remaining = cal.dateComponents([.day], from: now, to: loveStart).day ?? 0
-                summaryItem.title = "\(remaining)"
+                summaryItem.title = "\(remaining) \(dot)"
             } else {
-                summaryItem.title = "\(days)"
+                summaryItem.title = "\(days) \(dot)"
             }
             detailItem.isHidden = true
         } else {
             if now < loveStart {
                 let remaining = cal.dateComponents([.day], from: now, to: loveStart).day ?? 0
-                summaryItem.title = "❤️ 距离开始还有 \(remaining) 天"
+                summaryItem.title = "❤️ 距离开始还有 \(remaining) 天 \(dot)"
                 detailItem.title = "  开始日期：2026 年 5 月 16 日"
             } else {
-                summaryItem.title = "❤️ 在一起 \(days) 天"
+                summaryItem.title = "❤️ 在一起 \(days) 天 \(dot)"
                 detailItem.title = "  \(y) 年 \(m) 个月 \(d) 天"
             }
             detailItem.isHidden = false
@@ -373,22 +372,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshPresenceItem() {
-        guard let last = lastSeenOther else {
-            presenceItem.title = isStealthMode ? "Waiting…" : "⚪️ 等待对方上线…"
-            return
-        }
-        let elapsed = Date().timeIntervalSince(last)
-        if elapsed < onlineTimeout {
-            if isStealthMode {
-                presenceItem.title = otherDND ? "Away" : "Online"
-            } else {
-                presenceItem.title = otherDND ? "🟡 对方勿扰中" : "🟢 对方在线"
-            }
-        } else {
-            presenceItem.title = isStealthMode
-                ? "Offline (\(humanAgo(elapsed)))"
-                : "🔴 对方离线（\(humanAgo(elapsed))）"
-        }
+        // presenceItem 不再显示在菜单里，状态已合并进 summaryItem
+        refreshLoveTime()
+    }
+
+    private func refreshStealthItem() {
+        stealthToggleItem.title = "隐身模式"
+        stealthToggleItem.state = isStealthMode ? .on : .off
     }
 
     private func refreshDNDItem() {
