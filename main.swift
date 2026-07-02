@@ -202,6 +202,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaultIcon?.isTemplate = true
         isStealthMode = UserDefaults.standard.bool(forKey: "stealthMode")
         statusItem.button?.image = defaultIcon
+        // 如果持久化了隐身模式，启动后立即刷新图标
+        if isStealthMode { refreshStatusIcon() }
 
         let deviceId: String = {
             if let s = UserDefaults.standard.string(forKey: deviceKey) { return s }
@@ -283,17 +285,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pendingSepItem)
 
         summaryItem.target = self
-        summaryItem.action = #selector(copySummary)
+        summaryItem.action = #selector(sendPoke)
         menu.addItem(summaryItem)
 
-        detailItem.isEnabled = true
-        menu.addItem(detailItem)
-
         menu.addItem(NSMenuItem.separator())
-
-        pokeItem.target = self
-        pokeItem.action = #selector(sendPoke)
-        menu.addItem(pokeItem)
 
         dndToggleItem.target = self
         dndToggleItem.action = #selector(toggleDND)
@@ -328,12 +323,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let topic = ntfy.topic
         if topic.isEmpty {
             topicItem.title = isStealthMode ? "Set channel…" : "设置共享频道…（未配置）"
-            pokeItem.isEnabled = false
+            summaryItem.isEnabled = false
         } else {
             topicItem.title = isStealthMode ? "Edit channel" : "编辑频道"
-            pokeItem.isEnabled = true
+            summaryItem.isEnabled = true
         }
-        pokeItem.title = isStealthMode ? "Ping" : "戳 TA 一下 ❤️"
     }
 
     private func presenceDot() -> String {
@@ -347,8 +341,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let now = Date()
         let cal = Calendar.current
         let days = cal.dateComponents([.day], from: loveStart, to: now).day ?? 0
-        let parts = cal.dateComponents([.year, .month, .day], from: loveStart, to: now)
-        let y = parts.year ?? 0, m = parts.month ?? 0, d = parts.day ?? 0
         let dot = presenceDot()
         if isStealthMode {
             if now < loveStart {
@@ -357,17 +349,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 summaryItem.title = "\(days) \(dot)"
             }
-            detailItem.isHidden = true
         } else {
             if now < loveStart {
                 let remaining = cal.dateComponents([.day], from: now, to: loveStart).day ?? 0
                 summaryItem.title = "❤️ 距离开始还有 \(remaining) 天 \(dot)"
-                detailItem.title = "  开始日期：2026 年 5 月 16 日"
             } else {
                 summaryItem.title = "❤️ 在一起 \(days) 天 \(dot)"
-                detailItem.title = "  \(y) 年 \(m) 个月 \(d) 天"
             }
-            detailItem.isHidden = false
         }
     }
 
@@ -407,13 +395,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func refreshStatusIcon() {
         let count = (isDNDEnabled || autoDNDActive) ? pendingPokeCount : 0
         if isStealthMode {
-            // 隐身模式：用时钟图标，有消息时加角标
             if count > 0 {
                 statusItem.button?.image = makeStatusIcon(badgeCount: count, symbolName: "clock")
             } else {
-                let clockIcon = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)
-                clockIcon?.isTemplate = true
-                statusItem.button?.image = clockIcon
+                // 🫥 emoji 作为状态栏图标
+                let size = NSSize(width: 22, height: 18)
+                let img = NSImage(size: size, flipped: false) { _ in
+                    let attrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.systemFont(ofSize: 14)
+                    ]
+                    NSAttributedString(string: "🫥", attributes: attrs)
+                        .draw(at: NSPoint(x: 2, y: 1))
+                    return true
+                }
+                img.isTemplate = false
+                statusItem.button?.image = img
             }
         } else {
             if count > 0 {
@@ -559,14 +555,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func sendPoke() {
-        let original = pokeItem.title
-        pokeItem.title = "发送中…"
-        pokeItem.isEnabled = false
+        let original = summaryItem.title
+        summaryItem.title = isStealthMode ? "Sending…" : "发送中…"
+        summaryItem.isEnabled = false
         ntfy.poke { [weak self] ok in
             guard let self else { return }
-            self.pokeItem.title = ok ? "已戳一下 ✓" : "发送失败 ✗"
+            summaryItem.title = ok
+                ? (isStealthMode ? "Sent ✓" : "已戳一下 ✓")
+                : (isStealthMode ? "Failed ✗" : "发送失败 ✗")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                self.pokeItem.title = original
+                self.summaryItem.title = original
                 self.refreshTopicItem()
             }
         }
