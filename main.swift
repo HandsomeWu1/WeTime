@@ -170,6 +170,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let pendingPokeItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let pendingSepItem  = NSMenuItem.separator()
     private let dndToggleItem   = NSMenuItem(title: "🔕 勿扰模式", action: nil, keyEquivalent: "n")
+    private let stealthToggleItem = NSMenuItem(title: "隐身模式", action: nil, keyEquivalent: "s")
 
     private var ntfy: NtfyClient!
     private var iconRevertTimer: Timer?
@@ -188,6 +189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var autoDNDActive: Bool = false
     private var otherDND: Bool = false
     private var pendingPokeCount: Int = 0
+    private var isStealthMode: Bool = false
 
     private let meetingBundleIDs: Set<String> = [
         "com.tencent.meeting",
@@ -198,6 +200,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         defaultIcon = NSImage(systemSymbolName: "heart.fill", accessibilityDescription: "Love")
         defaultIcon?.isTemplate = true
+        isStealthMode = UserDefaults.standard.bool(forKey: "stealthMode")
         statusItem.button?.image = defaultIcon
 
         let deviceId: String = {
@@ -299,6 +302,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dndToggleItem.action = #selector(toggleDND)
         menu.addItem(dndToggleItem)
 
+        stealthToggleItem.target = self
+        stealthToggleItem.action = #selector(toggleStealth)
+        menu.addItem(stealthToggleItem)
+
         topicItem.target = self
         topicItem.action = #selector(changeTopic)
         menu.addItem(topicItem)
@@ -318,17 +325,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshUpdateItem()
         refreshDNDItem()
         refreshPendingPokeItem()
+        refreshStealthItem()
     }
 
     private func refreshTopicItem() {
         let topic = ntfy.topic
         if topic.isEmpty {
-            topicItem.title = "设置共享频道…（未配置）"
+            topicItem.title = isStealthMode ? "Set channel…" : "设置共享频道…（未配置）"
             pokeItem.isEnabled = false
         } else {
-            topicItem.title = "共享频道：\(topic)（点击修改）"
+            topicItem.title = isStealthMode ? "Channel: \(topic)" : "共享频道：\(topic)（点击修改）"
             pokeItem.isEnabled = true
         }
+        pokeItem.title = isStealthMode ? "Ping" : "戳 TA 一下 ❤️"
+    }
+
+    private func refreshStealthItem() {
+        stealthToggleItem.title  = "隐身模式"
+        stealthToggleItem.state  = isStealthMode ? .on : .off
     }
 
     private func refreshLoveTime() {
@@ -337,26 +351,43 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let days = cal.dateComponents([.day], from: loveStart, to: now).day ?? 0
         let parts = cal.dateComponents([.year, .month, .day], from: loveStart, to: now)
         let y = parts.year ?? 0, m = parts.month ?? 0, d = parts.day ?? 0
-        if now < loveStart {
-            let remaining = cal.dateComponents([.day], from: now, to: loveStart).day ?? 0
-            summaryItem.title = "❤️ 距离开始还有 \(remaining) 天"
-            detailItem.title = "  开始日期：2026 年 5 月 16 日"
+        if isStealthMode {
+            if now < loveStart {
+                let remaining = cal.dateComponents([.day], from: now, to: loveStart).day ?? 0
+                summaryItem.title = "\(remaining)"
+            } else {
+                summaryItem.title = "\(days)"
+            }
+            detailItem.isHidden = true
         } else {
-            summaryItem.title = "❤️ 在一起 \(days) 天"
-            detailItem.title = "  \(y) 年 \(m) 个月 \(d) 天"
+            if now < loveStart {
+                let remaining = cal.dateComponents([.day], from: now, to: loveStart).day ?? 0
+                summaryItem.title = "❤️ 距离开始还有 \(remaining) 天"
+                detailItem.title = "  开始日期：2026 年 5 月 16 日"
+            } else {
+                summaryItem.title = "❤️ 在一起 \(days) 天"
+                detailItem.title = "  \(y) 年 \(m) 个月 \(d) 天"
+            }
+            detailItem.isHidden = false
         }
     }
 
     private func refreshPresenceItem() {
         guard let last = lastSeenOther else {
-            presenceItem.title = "⚪️ 等待对方上线…"
+            presenceItem.title = isStealthMode ? "Waiting…" : "⚪️ 等待对方上线…"
             return
         }
         let elapsed = Date().timeIntervalSince(last)
         if elapsed < onlineTimeout {
-            presenceItem.title = otherDND ? "🟡 对方勿扰中" : "🟢 对方在线"
+            if isStealthMode {
+                presenceItem.title = otherDND ? "Away" : "Online"
+            } else {
+                presenceItem.title = otherDND ? "🟡 对方勿扰中" : "🟢 对方在线"
+            }
         } else {
-            presenceItem.title = "🔴 对方离线（\(humanAgo(elapsed))）"
+            presenceItem.title = isStealthMode
+                ? "Offline (\(humanAgo(elapsed)))"
+                : "🔴 对方离线（\(humanAgo(elapsed))）"
         }
     }
 
@@ -377,28 +408,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pendingPokeItem.isHidden = hidden
         pendingSepItem.isHidden  = hidden
         if !hidden {
-            pendingPokeItem.title = "💕 TA 戳了你 \(pendingPokeCount) 次（点击清除）"
+            pendingPokeItem.title = isStealthMode
+                ? "\(pendingPokeCount) new message(s)"
+                : "💕 TA 戳了你 \(pendingPokeCount) 次（点击清除）"
         }
     }
 
     private func refreshStatusIcon() {
         let count = (isDNDEnabled || autoDNDActive) ? pendingPokeCount : 0
-        if count > 0 {
-            statusItem.button?.image = makeStatusIcon(badgeCount: count)
+        if isStealthMode {
+            // 隐身模式：用时钟图标，有消息时加角标
+            if count > 0 {
+                statusItem.button?.image = makeStatusIcon(badgeCount: count, symbolName: "clock")
+            } else {
+                let clockIcon = NSImage(systemSymbolName: "clock", accessibilityDescription: nil)
+                clockIcon?.isTemplate = true
+                statusItem.button?.image = clockIcon
+            }
         } else {
-            statusItem.button?.image = defaultIcon
+            if count > 0 {
+                statusItem.button?.image = makeStatusIcon(badgeCount: count, symbolName: "heart.fill")
+            } else {
+                statusItem.button?.image = defaultIcon
+            }
         }
     }
 
-    private func makeStatusIcon(badgeCount: Int) -> NSImage {
+    private func makeStatusIcon(badgeCount: Int, symbolName: String) -> NSImage {
         let size = NSSize(width: 26, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
             // 画心形
-            if let heart = NSImage(systemSymbolName: "heart.fill",
+            if let icon = NSImage(systemSymbolName: symbolName,
                                    accessibilityDescription: nil) {
-                let heartRect = NSRect(x: 0, y: 1, width: 16, height: 16)
+                let iconRect = NSRect(x: 0, y: 1, width: 16, height: 16)
                 NSColor.labelColor.setFill()
-                heart.draw(in: heartRect,
+                icon.draw(in: iconRect,
                            from: .zero,
                            operation: .sourceOver,
                            fraction: 1.0)
@@ -441,6 +485,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UserDefaults.standard.set(isDNDEnabled, forKey: "dndEnabled")
         ntfy.sendDNDStatus(isDNDEnabled || autoDNDActive)
         refreshDNDItem()
+        refreshStatusIcon()
+    }
+
+    @objc private func toggleStealth() {
+        isStealthMode.toggle()
+        UserDefaults.standard.set(isStealthMode, forKey: "stealthMode")
+        refreshStealthItem()
+        refreshLoveTime()
+        refreshTopicItem()
+        refreshPresenceItem()
+        refreshPendingPokeItem()
         refreshStatusIcon()
     }
 
@@ -504,6 +559,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshUpdateItem()
         refreshDNDItem()
         refreshPendingPokeItem()
+        refreshStealthItem()
     }
 
     @objc private func copySummary() {
@@ -567,7 +623,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refreshStatusIcon()
         } else {
             let content = UNMutableNotificationContent()
-            content.title = "💕 TA 戳了你一下"
+            content.title = isStealthMode ? "1 new message" : "💕 TA 戳了你一下"
             content.sound = .default
             let req = UNNotificationRequest(identifier: UUID().uuidString,
                                             content: content, trigger: nil)
