@@ -7,6 +7,8 @@ private enum MsgType: String {
     case heartbeat = "hb"
     case dndOn     = "dnd_on"
     case dndOff    = "dnd_off"
+    case stealthOn  = "stealth_on"
+    case stealthOff = "stealth_off"
 }
 
 private struct ParsedMsg {
@@ -35,6 +37,7 @@ final class NtfyClient: NSObject, URLSessionDataDelegate {
     var onPoke: (() -> Void)?
     var onHeartbeat: (() -> Void)?
     var onDNDChanged: ((Bool) -> Void)?
+    var onStealthChanged: ((Bool) -> Void)?
 
     private var session: URLSession?
     private var task: URLSessionDataTask?
@@ -105,6 +108,10 @@ final class NtfyClient: NSObject, URLSessionDataDelegate {
         send(type: on ? .dndOn : .dndOff, tags: "do_not_disturb", priority: "min") { _ in }
     }
 
+    func sendStealthStatus(_ on: Bool) {
+        send(type: on ? .stealthOn : .stealthOff, tags: "stealth", priority: "min") { _ in }
+    }
+
     // MARK: URLSessionDataDelegate
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         buffer.append(data)
@@ -132,8 +139,10 @@ final class NtfyClient: NSObject, URLSessionDataDelegate {
         switch parsed.type {
         case .poke:      onPoke?()
         case .heartbeat: onHeartbeat?()
-        case .dndOn:     onDNDChanged?(true)
-        case .dndOff:    onDNDChanged?(false)
+        case .dndOn:      onDNDChanged?(true)
+        case .dndOff:     onDNDChanged?(false)
+        case .stealthOn:  onStealthChanged?(true)
+        case .stealthOff: onStealthChanged?(false)
         }
     }
 }
@@ -169,8 +178,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let updateItem    = NSMenuItem(title: "检查更新", action: nil, keyEquivalent: "")
     private let pendingPokeItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let pendingSepItem  = NSMenuItem.separator()
-    private let dndToggleItem   = NSMenuItem(title: "🔕 勿扰模式", action: nil, keyEquivalent: "n")
-    private let stealthToggleItem = NSMenuItem(title: "隐身模式", action: nil, keyEquivalent: "s")
+    private let modeItem        = NSMenuItem(title: "状态", action: nil, keyEquivalent: "")
+    private let dndToggleItem   = NSMenuItem(title: "🔕 勿扰", action: nil, keyEquivalent: "n")
+    private let stealthToggleItem = NSMenuItem(title: "🫥 隐身", action: nil, keyEquivalent: "s")
 
     private var ntfy: NtfyClient!
     private var iconRevertTimer: Timer?
@@ -188,6 +198,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isDNDEnabled: Bool = false
     private var autoDNDActive: Bool = false
     private var otherDND: Bool = false
+    private var otherStealth: Bool = false
     private var pendingPokeCount: Int = 0
     private var isStealthMode: Bool = false
 
@@ -218,6 +229,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ntfy.onDNDChanged = { [weak self] on in
             guard let self else { return }
             self.otherDND = on
+            self.refreshPresenceItem()
+        }
+        ntfy.onStealthChanged = { [weak self] on in
+            guard let self else { return }
+            self.otherStealth = on
             self.refreshPresenceItem()
         }
 
@@ -262,11 +278,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.checkMeetingStatus()
         }
 
-        // 广播当前 DND 状态（让对方初始化看到）
-        if isDNDEnabled {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.ntfy.sendDNDStatus(true)
-            }
+        // 广播当前 DND / 隐身状态（让对方初始化看到）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            if self.isDNDEnabled { self.ntfy.sendDNDStatus(true) }
+            if self.isStealthMode { self.ntfy.sendStealthStatus(true) }
         }
 
         cleanupUpdateArtifacts()
@@ -290,13 +306,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let modeSubmenu = NSMenu()
         dndToggleItem.target = self
         dndToggleItem.action = #selector(toggleDND)
-        menu.addItem(dndToggleItem)
-
+        modeSubmenu.addItem(dndToggleItem)
         stealthToggleItem.target = self
         stealthToggleItem.action = #selector(toggleStealth)
-        menu.addItem(stealthToggleItem)
+        modeSubmenu.addItem(stealthToggleItem)
+        modeItem.submenu = modeSubmenu
+        menu.addItem(modeItem)
 
         topicItem.target = self
         topicItem.action = #selector(changeTopic)
@@ -334,6 +352,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let last = lastSeenOther else { return "⚪️" }
         let elapsed = Date().timeIntervalSince(last)
         if elapsed >= onlineTimeout { return "🔴" }
+        if otherStealth { return "🫥" }
         return otherDND ? "🟡" : "🟢"
     }
 
@@ -365,19 +384,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshStealthItem() {
-        stealthToggleItem.title = "隐身模式"
+        stealthToggleItem.title = "🫥 隐身"
         stealthToggleItem.state = isStealthMode ? .on : .off
+        refreshModeItem()
     }
 
     private func refreshDNDItem() {
         if autoDNDActive {
-            dndToggleItem.title = "🔕 勿扰模式（腾讯会议全屏，已自动开启）"
+            dndToggleItem.title = "🔕 勿扰（腾讯会议全屏，已自动开启）"
             dndToggleItem.state = .on
             dndToggleItem.isEnabled = false
         } else {
-            dndToggleItem.title = "🔕 勿扰模式"
+            dndToggleItem.title = "🔕 勿扰"
             dndToggleItem.state = isDNDEnabled ? .on : .off
             dndToggleItem.isEnabled = true
+        }
+        refreshModeItem()
+    }
+
+    private func refreshModeItem() {
+        let dndOn = isDNDEnabled || autoDNDActive
+        switch (dndOn, isStealthMode) {
+        case (true, true):  modeItem.title = "状态：🔕🫥"
+        case (true, false): modeItem.title = "状态：🔕"
+        case (false, true): modeItem.title = "状态：🫥"
+        default:            modeItem.title = "状态"
         }
     }
 
@@ -477,6 +508,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleStealth() {
         isStealthMode.toggle()
         UserDefaults.standard.set(isStealthMode, forKey: "stealthMode")
+        ntfy.sendStealthStatus(isStealthMode)
         refreshStealthItem()
         refreshLoveTime()
         refreshTopicItem()
@@ -541,7 +573,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         refreshLoveTime()
         refreshTopicItem()
-        refreshPresenceItem()
         refreshUpdateItem()
         refreshDNDItem()
         refreshPendingPokeItem()
